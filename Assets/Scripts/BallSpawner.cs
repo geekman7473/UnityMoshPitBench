@@ -8,8 +8,8 @@ using UnityEngine;
 public class BallSpawner : MonoBehaviour
 {
     [Header("Spawn Settings")]
-    public float spawnRate = 2f;            // balls per second
-    public float spawnRadius = 2f;          // random horizontal offset from center
+    public float spawnRate = 4.5f;            // balls per second
+    public float spawnRadius = 5f;          // random horizontal offset from center
     public float spawnHeight = 12f;         // Y position to spawn at
 
     [Header("Ball Physics")]
@@ -35,10 +35,13 @@ public class BallSpawner : MonoBehaviour
     };
 
     float spawnTimer;
-    PhysicsMaterial ballPhysicsMaterial; // Unity 6 uses PhysicsMaterial (not PhysicMaterial)
+    PhysicsMaterial ballPhysicsMaterial;
+    System.Random _rng;
 
     void Start()
     {
+        _rng = new System.Random(12345);
+
         // Create a shared physics material for all balls
         ballPhysicsMaterial = new PhysicsMaterial("PoolBallPhysics");
         ballPhysicsMaterial.bounciness = bounciness;
@@ -67,11 +70,14 @@ public class BallSpawner : MonoBehaviour
         ball.transform.localScale = Vector3.one * ballRadius * 2f;
 
         // Random position within spawn radius
-        Vector2 offset = Random.insideUnitCircle * spawnRadius;
+        float angle = (float)(_rng.NextDouble() * System.Math.PI * 2.0);
+        float dist = (float)System.Math.Sqrt(_rng.NextDouble()) * spawnRadius;
+        float ox = Mathf.Cos(angle) * dist;
+        float oz = Mathf.Sin(angle) * dist;
         ball.transform.position = new Vector3(
-            transform.position.x + offset.x,
+            transform.position.x + ox,
             spawnHeight,
-            transform.position.z + offset.y
+            transform.position.z + oz
         );
 
         // Physics
@@ -86,7 +92,7 @@ public class BallSpawner : MonoBehaviour
 
         // Random color material
         Renderer rend = ball.GetComponent<Renderer>();
-        rend.material = CreateBallMaterial(ballColors[Random.Range(0, ballColors.Length)]);
+        rend.material = CreateBallMaterial(ballColors[_rng.Next(ballColors.Length)]);
     }
 
     Material CreateBallMaterial(Color color)

@@ -64,6 +64,26 @@ public class BenchmarkManager : MonoBehaviour
     // ── MonoBehaviour ──────────────────────────────────────────────
     private void Update()
     {
+        // Escape key skips current running phase entirely
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            if (CurrentPhase == Phase.Phase1_Running)
+            {
+                TransitionToPhase2();
+                return;
+            }
+            else if (CurrentPhase == Phase.Phase2_Running)
+            {
+                TransitionToPhase3();
+                return;
+            }
+            else if (CurrentPhase == Phase.Phase3_Running)
+            {
+                FinishPhase3();
+                return;
+            }
+        }
+
         if (CurrentPhase == Phase.Phase1_Running)
         {
             _p1Elapsed += Time.unscaledDeltaTime;

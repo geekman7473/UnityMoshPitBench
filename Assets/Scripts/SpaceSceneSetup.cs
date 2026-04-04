@@ -7,14 +7,14 @@ using UnityEngine.SceneManagement;
 /// </summary>
 public static class SpaceSceneSetup
 {
-    private const int AsteroidCount = 100;
+    private const int AsteroidCount = 200;
     private const float MinRadius = 0.1f;
     private const float MaxRadius = 10f;   // 2 orders of magnitude
     private const float Density = 2f;      // uniform density for all rocks
     private const float SpawnRadius = 80f;  // initial spread
-    private const float MinSpeed = 2f;
-    private const float MaxSpeed = 6f;
-    private const int TextureVariations = 8;
+    private const float MinSpeed = 10f;
+    private const float MaxSpeed = 30f;
+    private const int TextureVariations = 64;
     private const int TextureSize = 128;
 
     public static void Setup()
@@ -51,77 +51,51 @@ public static class SpaceSceneSetup
 
     static void CreateStarSkybox()
     {
-        System.Random rng = new System.Random(99999);
+        System.Random rng = new System.Random(12345);
 
-        // Try to create a 6-sided skybox; fall back to cubemap approach
-        Shader skyShader = Shader.Find("Skybox/6 Sided");
-        if (skyShader == null) skyShader = Shader.Find("Skybox/Cubemap");
-        if (skyShader == null) skyShader = Shader.Find("Skybox/Panoramic");
-
-        if (skyShader == null)
+        // Set camera to solid black background
+        Camera cam = Camera.main;
+        if (cam != null)
         {
-            // Last resort: grab shader from existing skybox material if any
-            if (RenderSettings.skybox != null)
-                skyShader = RenderSettings.skybox.shader;
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = new Color(0.005f, 0.005f, 0.015f, 1f);
+            cam.farClipPlane = 5000f;
         }
 
-        if (skyShader == null || skyShader.name == "Skybox/Procedural")
-        {
-            // Can't do a textured skybox — just make camera solid dark blue
-            Camera cam = Camera.main;
-            if (cam != null)
-            {
-                cam.clearFlags = CameraClearFlags.SolidColor;
-                cam.backgroundColor = new Color(0.01f, 0.01f, 0.03f, 1f);
-            }
-            Debug.LogWarning("SpaceSceneSetup: No suitable skybox shader found. Using solid color fallback.");
-            return;
-        }
+        // Create a giant inverted sphere with star texture as our "skybox"
+        // This avoids needing any specific skybox shader which may not be available
+        GameObject skySphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        skySphere.name = "StarSphere";
+        skySphere.transform.position = Vector3.zero;
+        skySphere.transform.localScale = Vector3.one * 3000f;
 
-        Material skyMat = new Material(skyShader);
+        // Remove collider so it doesn't interfere with physics
+        Object.Destroy(skySphere.GetComponent<Collider>());
 
-        if (skyShader.name == "Skybox/6 Sided")
-        {
-            Texture2D[] faces = new Texture2D[6];
-            for (int f = 0; f < 6; f++)
-                faces[f] = GenerateStarFace(512, rng);
+        // Generate star texture
+        Texture2D starTex = GenerateStarFace(1024, rng);
 
-            skyMat.SetTexture("_FrontTex", faces[0]);
-            skyMat.SetTexture("_BackTex", faces[1]);
-            skyMat.SetTexture("_LeftTex", faces[2]);
-            skyMat.SetTexture("_RightTex", faces[3]);
-            skyMat.SetTexture("_UpTex", faces[4]);
-            skyMat.SetTexture("_DownTex", faces[5]);
-        }
-        else if (skyShader.name == "Skybox/Cubemap")
-        {
-            Cubemap cubemap = new Cubemap(512, TextureFormat.RGBA32, false);
-            CubemapFace[] cubeFaces = {
-                CubemapFace.PositiveX, CubemapFace.NegativeX,
-                CubemapFace.PositiveY, CubemapFace.NegativeY,
-                CubemapFace.PositiveZ, CubemapFace.NegativeZ
-            };
-            for (int f = 0; f < 6; f++)
-            {
-                Texture2D faceTex = GenerateStarFace(512, rng);
-                cubemap.SetPixels(faceTex.GetPixels(), cubeFaces[f]);
-            }
-            cubemap.Apply();
-            skyMat.SetTexture("_Tex", cubemap);
-        }
-        else
-        {
-            // Panoramic fallback
-            Texture2D pano = GenerateStarFace(2048, rng);
-            skyMat.mainTexture = pano;
-        }
+        // Create unlit material so stars aren't affected by lighting
+        Shader unlitShader = Shader.Find("Universal Render Pipeline/Unlit");
+        if (unlitShader == null) unlitShader = Shader.Find("Unlit/Texture");
+        if (unlitShader == null) unlitShader = Shader.Find("Universal Render Pipeline/Lit");
+        if (unlitShader == null) unlitShader = Shader.Find("Standard");
 
-        RenderSettings.skybox = skyMat;
+        Material starMat = new Material(unlitShader);
+        starMat.mainTexture = starTex;
+        starMat.SetFloat("_Cull", 1f); // Front face culling = render inside of sphere
 
-        // Ensure camera renders the skybox
-        Camera mainCam = Camera.main;
-        if (mainCam != null)
-            mainCam.clearFlags = CameraClearFlags.Skybox;
+        // If URP Unlit, set the base map
+        starMat.SetTexture("_BaseMap", starTex);
+        starMat.SetColor("_BaseColor", Color.white);
+
+        // Render inside-out by flipping normals via negative scale on one axis
+        // Actually easier: just set cull to Front so we see inside faces
+        starMat.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Front);
+
+        skySphere.GetComponent<Renderer>().material = starMat;
+        skySphere.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        skySphere.GetComponent<Renderer>().receiveShadows = false;
     }
 
     static Texture2D GenerateStarFace(int size, System.Random rng)
@@ -212,7 +186,7 @@ public static class SpaceSceneSetup
 
     static void CreateAsteroids()
     {
-        System.Random rng = new System.Random(67890);
+        System.Random rng = new System.Random(12345);
 
         // Pre-generate texture variations
         Material[] asteroidMaterials = new Material[TextureVariations];
@@ -345,16 +319,15 @@ public static class SpaceSceneSetup
         Camera mainCam = Camera.main;
         if (mainCam == null) return;
 
+        // Disable OrbitCamera, replace with SpaceCamera that tracks center of mass
         OrbitCamera orbit = mainCam.GetComponent<OrbitCamera>();
         if (orbit != null)
-        {
-            orbit.focalPoint = Vector3.zero;
-            orbit.orbitRadius = 150f;
-            orbit.orbitSpeed = 10f;
-            orbit.baseHeight = 40f;
-            orbit.heightAmplitude = 35f;
-            orbit.heightFrequency = 0.08f;
-        }
+            orbit.enabled = false;
+
+        SpaceCamera spaceCam = mainCam.gameObject.AddComponent<SpaceCamera>();
+        spaceCam.distance = 120f;
+        spaceCam.smoothSpeed = 5f;
+        spaceCam.orbitSpeed = 5f;
     }
 
     static void ReconfigureLight()

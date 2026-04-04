@@ -124,7 +124,6 @@ public class SceneBootstrap : MonoBehaviour
 
         BallSpawner bs = spawner.AddComponent<BallSpawner>();
         bs.spawnRate = 100f;
-        bs.spawnRadius = 2f;
         bs.spawnHeight = funnelBottomY + funnelHeight + 2f; // above the funnel top
         bs.ballRadius = 0.15f;
         bs.ballMass = 0.17f;

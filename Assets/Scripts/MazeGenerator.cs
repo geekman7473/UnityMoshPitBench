@@ -16,7 +16,7 @@ public class MazeGenerator : MonoBehaviour
     public float wallThickness = 0.3f;
 
     [Header("Seed")]
-    public int seed = 54321;
+    public int seed = 12345;
 
     [Header("Appearance")]
     public Color wallColor = new Color(0.72f, 0.60f, 0.35f, 1f);   // straw/corn color

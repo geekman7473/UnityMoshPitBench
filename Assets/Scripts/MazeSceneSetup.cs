@@ -4,14 +4,14 @@ using UnityEngine.SceneManagement;
 using Unity.AI.Navigation;
 
 /// <summary>
-/// Sets up Phase 3: Corn Maze with 1000 AI agents.
+/// Sets up Phase 3: Corn Maze with 200 AI agents.
 /// Clears Phase 2 objects, generates a maze, bakes a NavMesh at runtime,
 /// spawns 1000 animated humanoids with NavMeshAgent pathfinding to the center.
 /// </summary>
 public static class MazeSceneSetup
 {
     private const int AgentCount = 1000;
-    private const float AgentRadius = 0.3f;
+    private const float AgentRadius = 0.15f;
     private const float AgentHeight = 1.8f;
     private const float AgentBaseSpeed = 3.5f;
     private const float AgentSpeedVariation = 1.0f; // ± variation
@@ -31,10 +31,10 @@ public static class MazeSceneSetup
         MazeGenerator maze = mazeGo.AddComponent<MazeGenerator>();
         maze.mazeWidth = 25;
         maze.mazeHeight = 25;
-        maze.cellSize = 3f;
+        maze.cellSize = 4f;
         maze.wallHeight = 3f;
-        maze.wallThickness = 0.3f;
-        maze.seed = 54321;
+        maze.wallThickness = 0.25f;
+        maze.seed = 12345;
         maze.Generate();
 
         // Bake NavMesh at runtime
@@ -85,7 +85,7 @@ public static class MazeSceneSetup
 
     static void SpawnAgents(MazeGenerator maze)
     {
-        System.Random rng = new System.Random(11111);
+        System.Random rng = new System.Random(12345);
         Vector3 destination = maze.CenterWorldPos;
 
         for (int i = 0; i < AgentCount; i++)
@@ -93,26 +93,39 @@ public static class MazeSceneSetup
             // Random position in the maze
             Vector3 spawnPos = maze.GetRandomCellPosition(rng);
 
-            // Create animated humanoid
+            // Create animated humanoid (autoplay is on, we'll control it via AgentController)
             GameObject agent = ProceduralHumanoid.Create(spawnPos, rng);
+
+            // Stop the auto-playing animation — AgentController will manage it
+            Animation anim = agent.GetComponent<Animation>();
+            if (anim != null)
+            {
+                anim.playAutomatically = false;
+                anim.Stop();
+            }
 
             // Add NavMeshAgent
             NavMeshAgent navAgent = agent.AddComponent<NavMeshAgent>();
             navAgent.radius = AgentRadius;
             navAgent.height = AgentHeight;
             navAgent.speed = AgentBaseSpeed + ((float)rng.NextDouble() * 2f - 1f) * AgentSpeedVariation;
-            navAgent.angularSpeed = 120f + (float)rng.NextDouble() * 60f;
-            navAgent.acceleration = 8f;
-            navAgent.stoppingDistance = 1f;
-            navAgent.obstacleAvoidanceType = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
+            navAgent.angularSpeed = 360f + (float)rng.NextDouble() * 180f;
+            navAgent.acceleration = 12f;
+            navAgent.stoppingDistance = 1.5f;
+            navAgent.obstacleAvoidanceType = ObstacleAvoidanceType.LowQualityObstacleAvoidance;
             navAgent.avoidancePriority = rng.Next(0, 100);
             navAgent.autoTraverseOffMeshLink = true;
+            navAgent.autoBraking = false;
+            navAgent.autoRepath = true;
 
             // Place on NavMesh — warp to nearest valid position
-            if (NavMesh.SamplePosition(spawnPos, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+            if (NavMesh.SamplePosition(spawnPos, out NavMeshHit hit, 10f, NavMesh.AllAreas))
             {
                 navAgent.Warp(hit.position);
             }
+
+            // Add controller that manages animation and re-pathing
+            agent.AddComponent<AgentController>();
 
             // Set destination to maze center
             navAgent.SetDestination(destination);
@@ -127,9 +140,16 @@ public static class MazeSceneSetup
         // Reset camera clear flags
         mainCam.clearFlags = CameraClearFlags.Skybox;
 
+        // Disable SpaceCamera from Phase 2
+        SpaceCamera spaceCam = mainCam.GetComponent<SpaceCamera>();
+        if (spaceCam != null)
+            spaceCam.enabled = false;
+
+        // Re-enable and reconfigure OrbitCamera
         OrbitCamera orbit = mainCam.GetComponent<OrbitCamera>();
         if (orbit != null)
         {
+            orbit.enabled = true;
             Vector3 center = maze.CenterWorldPos;
             orbit.focalPoint = center + Vector3.up * 2f;
             orbit.orbitRadius = 50f;
