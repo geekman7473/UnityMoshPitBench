@@ -43,7 +43,11 @@ public class SceneBootstrap : MonoBehaviour
     {
         GameObject bmGo = new GameObject("BenchmarkManager");
         BenchmarkManager bm = bmGo.AddComponent<BenchmarkManager>();
-        bm.benchmarkDuration = 45f;
+        bm.phase1Duration = 45f;
+        bm.phase2Duration = 45f;
+        bm.phase3Duration = 45f;
+        bm.onTransitionToPhase2 = () => SpaceSceneSetup.Setup();
+        bm.onTransitionToPhase3 = () => MazeSceneSetup.Setup();
     }
 
     void CreateGroundPlane()

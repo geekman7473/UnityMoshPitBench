@@ -1,96 +1,164 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.AI;
 
 /// <summary>
-/// Runs a timed benchmark, recording per-frame FPS and ball count.
-/// When time is up the scene is paused and a results screen is drawn
-/// showing Average FPS, 1% Low FPS, ball count, and an FPS-over-time graph.
-/// An "Exit" button quits the application.
+/// Multi-phase benchmark manager.
+/// Phase 1: Mosh Pit (pool balls in funnel)
+/// Phase 2: Space Rocks (n-body asteroid sim)
+/// Phase 3: Corn Maze (1000 AI agents pathfinding)
+/// Shows results screen after each phase with FPS graph and stats.
 /// </summary>
 public class BenchmarkManager : MonoBehaviour
 {
+    public enum Phase { Phase1_Running, Phase1_Results, Phase2_Running, Phase2_Results, Phase3_Running, Phase3_Results }
+
     // ── configuration ──────────────────────────────────────────────
     [Header("Benchmark Settings")]
-    public float benchmarkDuration = 45f;
+    public float phase1Duration = 45f;
+    public float phase2Duration = 45f;
+    public float phase3Duration = 45f;
 
-    // ── internal state ─────────────────────────────────────────────
-    private readonly List<float> _fpsHistory = new List<float>();
-    private float _elapsed;
-    private bool _benchmarkDone;
-    private Texture2D _graphTexture;
+    /// <summary>Set by SceneBootstrap to handle the transition to Phase 2.</summary>
+    public Action onTransitionToPhase2;
+    /// <summary>Set by SceneBootstrap to handle the transition to Phase 3.</summary>
+    public Action onTransitionToPhase3;
 
-    /// <summary>True once the benchmark has finished and the results screen is showing.</summary>
-    public bool IsBenchmarkDone => _benchmarkDone;
+    // ── state ──────────────────────────────────────────────────────
+    public Phase CurrentPhase { get; private set; } = Phase.Phase1_Running;
 
-    // Cached results
-    private float _avgFps;
-    private float _onePercentLow;
-    private float _minFps;
-    private float _maxFps;
-    private int _totalBalls;
+    // Phase 1 data
+    private readonly List<float> _p1FpsHistory = new List<float>();
+    private float _p1Elapsed;
+    private float _p1Avg, _p1Min, _p1Max, _p1Low;
+    private int _p1Balls;
+    private Texture2D _p1Graph;
 
-    // HUD
+    // Phase 2 data
+    private readonly List<float> _p2FpsHistory = new List<float>();
+    private float _p2Elapsed;
+    private float _p2Avg, _p2Min, _p2Max, _p2Low;
+    private int _p2Balls;
+    private Texture2D _p2Graph;
+
+    // Phase 3 data
+    private readonly List<float> _p3FpsHistory = new List<float>();
+    private float _p3Elapsed;
+    private float _p3Avg, _p3Min, _p3Max, _p3Low;
+    private int _p3Agents;
+    private Texture2D _p3Graph;
+
+    // HUD (updated periodically)
     private float _hudFps;
+    private int _hudBalls;
     private float _hudUpdateTimer;
     private const float HudUpdateInterval = 0.25f;
 
-    // Styles (created once)
-    private GUIStyle _boxStyle;
-    private GUIStyle _titleStyle;
-    private GUIStyle _labelStyle;
-    private GUIStyle _valueLabelStyle;
-    private GUIStyle _buttonStyle;
-    private GUIStyle _smallLabelStyle;
-    private GUIStyle _hudStyle;
+    // Styles
+    private GUIStyle _boxStyle, _titleStyle, _labelStyle, _valueLabelStyle;
+    private GUIStyle _buttonStyle, _continueButtonStyle, _smallLabelStyle, _hudStyle;
     private bool _stylesInitialized;
 
     // ── MonoBehaviour ──────────────────────────────────────────────
     private void Update()
     {
-        if (_benchmarkDone) return;
+        if (CurrentPhase == Phase.Phase1_Running)
+        {
+            _p1Elapsed += Time.unscaledDeltaTime;
+            float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
+            _p1FpsHistory.Add(fps);
+            UpdateHud(fps);
+            if (_p1Elapsed >= phase1Duration) FinishPhase1();
+        }
+        else if (CurrentPhase == Phase.Phase2_Running)
+        {
+            _p2Elapsed += Time.unscaledDeltaTime;
+            float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
+            _p2FpsHistory.Add(fps);
+            UpdateHud(fps);
+            if (_p2Elapsed >= phase2Duration) FinishPhase2();
+        }
+        else if (CurrentPhase == Phase.Phase3_Running)
+        {
+            _p3Elapsed += Time.unscaledDeltaTime;
+            float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
+            _p3FpsHistory.Add(fps);
+            UpdateHud(fps);
+            if (_p3Elapsed >= phase3Duration) FinishPhase3();
+        }
+    }
 
-        _elapsed += Time.unscaledDeltaTime;
-
-        float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
-        _fpsHistory.Add(fps);
-
-        // Update HUD readout periodically
+    private void UpdateHud(float fps)
+    {
         _hudUpdateTimer -= Time.unscaledDeltaTime;
         if (_hudUpdateTimer <= 0f)
         {
             _hudFps = fps;
+            _hudBalls = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length
+                      + FindObjectsByType<NavMeshAgent>(FindObjectsSortMode.None).Length;
             _hudUpdateTimer = HudUpdateInterval;
-        }
-
-        if (_elapsed >= benchmarkDuration)
-        {
-            FinishBenchmark();
         }
     }
 
-    // ── Benchmark logic ────────────────────────────────────────────
-    private void FinishBenchmark()
+    // ── Phase logic ────────────────────────────────────────────────
+    private void FinishPhase1()
     {
-        _benchmarkDone = true;
+        CurrentPhase = Phase.Phase1_Results;
         Time.timeScale = 0f;
+        ComputeStats(_p1FpsHistory, out _p1Avg, out _p1Min, out _p1Max, out _p1Low);
+        _p1Balls = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length;
+        _p1Graph = BuildGraphTexture(_p1FpsHistory, _p1Avg, _p1Low, _p1Max, phase1Duration, 800, 300);
+    }
 
-        _avgFps = _fpsHistory.Average();
-        _minFps = _fpsHistory.Min();
-        _maxFps = _fpsHistory.Max();
+    private void TransitionToPhase2()
+    {
+        onTransitionToPhase2?.Invoke();
+        CurrentPhase = Phase.Phase2_Running;
+        Time.timeScale = 1f;
+        _hudUpdateTimer = 0f;
+    }
 
-        List<float> sorted = _fpsHistory.OrderBy(f => f).ToList();
+    private void FinishPhase2()
+    {
+        CurrentPhase = Phase.Phase2_Results;
+        Time.timeScale = 0f;
+        ComputeStats(_p2FpsHistory, out _p2Avg, out _p2Min, out _p2Max, out _p2Low);
+        _p2Balls = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length;
+        _p2Graph = BuildGraphTexture(_p2FpsHistory, _p2Avg, _p2Low, _p2Max, phase2Duration, 800, 300);
+    }
+
+    private void TransitionToPhase3()
+    {
+        onTransitionToPhase3?.Invoke();
+        CurrentPhase = Phase.Phase3_Running;
+        Time.timeScale = 1f;
+        _hudUpdateTimer = 0f;
+    }
+
+    private void FinishPhase3()
+    {
+        CurrentPhase = Phase.Phase3_Results;
+        Time.timeScale = 0f;
+        ComputeStats(_p3FpsHistory, out _p3Avg, out _p3Min, out _p3Max, out _p3Low);
+        _p3Agents = FindObjectsByType<NavMeshAgent>(FindObjectsSortMode.None).Length;
+        _p3Graph = BuildGraphTexture(_p3FpsHistory, _p3Avg, _p3Low, _p3Max, phase3Duration, 800, 300);
+    }
+
+    private void ComputeStats(List<float> fps, out float avg, out float min, out float max, out float low)
+    {
+        avg = fps.Average();
+        min = fps.Min();
+        max = fps.Max();
+        var sorted = fps.OrderBy(f => f).ToList();
         int count1Pct = Mathf.Max(1, Mathf.FloorToInt(sorted.Count * 0.01f));
-        _onePercentLow = sorted.Take(count1Pct).Average();
-
-        // Count pool balls in scene
-        _totalBalls = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length;
-
-        _graphTexture = BuildGraphTexture(800, 300);
+        low = sorted.Take(count1Pct).Average();
     }
 
     // ── Graph texture generation ───────────────────────────────────
-    private Texture2D BuildGraphTexture(int width, int height)
+    private Texture2D BuildGraphTexture(List<float> fpsData, float avgFps, float lowFps, float maxFps,
+        float duration, int width, int height)
     {
         Texture2D tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
         tex.filterMode = FilterMode.Bilinear;
@@ -105,18 +173,15 @@ public class BenchmarkManager : MonoBehaviour
         for (int i = 0; i < pixels.Length; i++) pixels[i] = bgColor;
         tex.SetPixels(pixels);
 
-        int marginLeft = 50;
-        int marginBottom = 30;
-        int marginTop = 10;
-        int marginRight = 10;
+        int marginLeft = 50, marginBottom = 30, marginTop = 10, marginRight = 10;
         int graphW = width - marginLeft - marginRight;
         int graphH = height - marginBottom - marginTop;
 
         float fpsMin = 0;
-        float fpsMax = Mathf.Ceil(_maxFps / 10f) * 10f;
+        float fpsMax = Mathf.Ceil(maxFps / 10f) * 10f;
         if (fpsMax < 10) fpsMax = 10;
 
-        // Horizontal grid lines
+        // Grid lines
         float gridStep = Mathf.Max(10, Mathf.Round(fpsMax / 6f / 10f) * 10f);
         for (float g = 0; g <= fpsMax; g += gridStep)
         {
@@ -127,7 +192,7 @@ public class BenchmarkManager : MonoBehaviour
         }
 
         // Avg line
-        int avgY = marginBottom + Mathf.Clamp(Mathf.RoundToInt((_avgFps - fpsMin) / (fpsMax - fpsMin) * graphH), 0, graphH);
+        int avgY = marginBottom + Mathf.Clamp(Mathf.RoundToInt((avgFps - fpsMin) / (fpsMax - fpsMin) * graphH), 0, graphH);
         for (int x = marginLeft; x < marginLeft + graphW; x++)
         {
             tex.SetPixel(x, avgY, avgColor);
@@ -135,7 +200,7 @@ public class BenchmarkManager : MonoBehaviour
         }
 
         // 1% Low line
-        int lowY = marginBottom + Mathf.Clamp(Mathf.RoundToInt((_onePercentLow - fpsMin) / (fpsMax - fpsMin) * graphH), 0, graphH);
+        int lowY = marginBottom + Mathf.Clamp(Mathf.RoundToInt((lowFps - fpsMin) / (fpsMax - fpsMin) * graphH), 0, graphH);
         for (int x = marginLeft; x < marginLeft + graphW; x++)
         {
             tex.SetPixel(x, lowY, lowColor);
@@ -143,15 +208,13 @@ public class BenchmarkManager : MonoBehaviour
         }
 
         // FPS data line
-        int sampleCount = _fpsHistory.Count;
+        int sampleCount = fpsData.Count;
         float samplesPerPixel = (float)sampleCount / graphW;
-
         int prevPx = -1, prevPy = -1;
         for (int px = 0; px < graphW; px++)
         {
             int sampleIdx = Mathf.Clamp(Mathf.RoundToInt(px * samplesPerPixel), 0, sampleCount - 1);
-            float val = _fpsHistory[sampleIdx];
-
+            float val = fpsData[sampleIdx];
             int py = marginBottom + Mathf.Clamp(Mathf.RoundToInt((val - fpsMin) / (fpsMax - fpsMin) * graphH), 0, graphH - 1);
 
             for (int dy = -1; dy <= 1; dy++)
@@ -172,7 +235,6 @@ public class BenchmarkManager : MonoBehaviour
                     if (xPos >= 0 && xPos < width && fy >= 0 && fy < height)
                         tex.SetPixel(xPos, fy, lineColor);
             }
-
             prevPx = px;
             prevPy = py;
         }
@@ -194,115 +256,113 @@ public class BenchmarkManager : MonoBehaviour
         _stylesInitialized = true;
 
         _boxStyle = new GUIStyle(GUI.skin.box)
-        {
-            normal = { background = MakeTex(2, 2, new Color(0.08f, 0.08f, 0.12f, 0.96f)) }
-        };
+        { normal = { background = MakeTex(2, 2, new Color(0.08f, 0.08f, 0.12f, 0.96f)) } };
 
         _titleStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 32,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleCenter,
-            normal = { textColor = Color.white }
-        };
+        { fontSize = 32, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+          normal = { textColor = Color.white } };
 
         _labelStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 22,
-            normal = { textColor = new Color(0.75f, 0.75f, 0.80f) }
-        };
+        { fontSize = 22, normal = { textColor = new Color(0.75f, 0.75f, 0.80f) } };
 
         _valueLabelStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 22,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleRight,
-            normal = { textColor = Color.white }
-        };
+        { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleRight,
+          normal = { textColor = Color.white } };
 
         _smallLabelStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 14,
-            normal = { textColor = new Color(0.55f, 0.55f, 0.60f) }
-        };
+        { fontSize = 14, normal = { textColor = new Color(0.55f, 0.55f, 0.60f) } };
 
         _buttonStyle = new GUIStyle(GUI.skin.button)
-        {
-            fontSize = 24,
-            fontStyle = FontStyle.Bold,
-            fixedHeight = 55,
-            normal = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.75f, 0.18f, 0.18f, 1f)) },
-            hover = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.90f, 0.25f, 0.25f, 1f)) },
-            active = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.60f, 0.12f, 0.12f, 1f)) }
-        };
+        { fontSize = 24, fontStyle = FontStyle.Bold, fixedHeight = 55,
+          normal = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.75f, 0.18f, 0.18f, 1f)) },
+          hover  = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.90f, 0.25f, 0.25f, 1f)) },
+          active = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.60f, 0.12f, 0.12f, 1f)) } };
+
+        _continueButtonStyle = new GUIStyle(GUI.skin.button)
+        { fontSize = 24, fontStyle = FontStyle.Bold, fixedHeight = 55,
+          normal = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.18f, 0.55f, 0.25f, 1f)) },
+          hover  = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.25f, 0.70f, 0.35f, 1f)) },
+          active = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.12f, 0.40f, 0.18f, 1f)) } };
 
         _hudStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 18,
-            fontStyle = FontStyle.Bold,
-            normal = { textColor = new Color(1f, 1f, 1f, 0.85f) }
-        };
+        { fontSize = 18, fontStyle = FontStyle.Bold,
+          normal = { textColor = new Color(1f, 1f, 1f, 0.85f) } };
     }
 
     private void OnGUI()
     {
         InitStyles();
 
-        if (!_benchmarkDone)
+        switch (CurrentPhase)
         {
-            // Live HUD: FPS, timer, ball count
-            float timeLeft = benchmarkDuration - _elapsed;
-            int ballCount = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length;
-            string hudText = $"FPS: {_hudFps:F0}  |  Time: {timeLeft:F1}s  |  Balls: {ballCount}";
-            GUI.Label(new Rect(10, 10, 500, 30), hudText, _hudStyle);
-            return;
+            case Phase.Phase1_Running:
+                DrawHud("Phase 1: Mosh Pit", phase1Duration - _p1Elapsed);
+                break;
+            case Phase.Phase1_Results:
+                DrawResultsScreen("Phase 1: Mosh Pit — Results",
+                    _p1Avg, _p1Low, _p1Min, _p1Max, _p1FpsHistory.Count, _p1Balls,
+                    phase1Duration, _p1Graph, continueLabel: "Continue to Phase 2");
+                break;
+            case Phase.Phase2_Running:
+                DrawHud("Phase 2: Space Rocks", phase2Duration - _p2Elapsed);
+                break;
+            case Phase.Phase2_Results:
+                DrawResultsScreen("Phase 2: Space Rocks — Results",
+                    _p2Avg, _p2Low, _p2Min, _p2Max, _p2FpsHistory.Count, _p2Balls,
+                    phase2Duration, _p2Graph, continueLabel: "Continue to Phase 3");
+                break;
+            case Phase.Phase3_Running:
+                DrawHud("Phase 3: Corn Maze", phase3Duration - _p3Elapsed);
+                break;
+            case Phase.Phase3_Results:
+                DrawResultsScreen("Phase 3: Corn Maze \u2014 Results",
+                    _p3Avg, _p3Low, _p3Min, _p3Max, _p3FpsHistory.Count, _p3Agents,
+                    phase3Duration, _p3Graph, continueLabel: null);
+                break;
         }
+    }
 
-        // ── Results screen ──
+    private void DrawHud(string phaseName, float timeLeft)
+    {
+        string hudText = $"{phaseName}  |  FPS: {_hudFps:F0}  |  Time: {timeLeft:F1}s  |  Bodies: {_hudBalls}";
+        GUI.Label(new Rect(10, 10, 700, 30), hudText, _hudStyle);
+    }
 
+    private void DrawResultsScreen(string title, float avg, float low, float min, float max,
+        int totalFrames, int totalBalls, float duration, Texture2D graph, string continueLabel = null, bool showContinue = false)
+    {
         float panelW = 880;
-        float panelH = 660;
+        float panelH = 700;
         float x = (Screen.width - panelW) / 2f;
         float y = (Screen.height - panelH) / 2f;
 
-        // Dim background
+        // Dim
         GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height),
             MakeTex(1, 1, new Color(0, 0, 0, 0.65f)));
 
-        // Panel
         GUI.Box(new Rect(x, y, panelW, panelH), GUIContent.none, _boxStyle);
 
         float cx = x + 40;
         float cy = y + 15;
         float contentW = panelW - 80;
 
-        // Title
-        GUI.Label(new Rect(cx, cy, contentW, 45), "MoshPit Benchmark Results", _titleStyle);
+        GUI.Label(new Rect(cx, cy, contentW, 45), title, _titleStyle);
         cy += 52;
 
-        // Stats rows
         float rowH = 34;
-        DrawStatRow(cx, cy, contentW, rowH, "Average FPS", $"{_avgFps:F1}");
-        cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "1% Low FPS", $"{_onePercentLow:F1}");
-        cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Min FPS", $"{_minFps:F1}");
-        cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Max FPS", $"{_maxFps:F1}");
-        cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Total Frames", $"{_fpsHistory.Count}");
-        cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Total Balls", $"{_totalBalls}");
-        cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Duration", $"{benchmarkDuration:F0}s");
-        cy += rowH + 8;
+        DrawStatRow(cx, cy, contentW, rowH, "Average FPS", $"{avg:F1}"); cy += rowH;
+        DrawStatRow(cx, cy, contentW, rowH, "1% Low FPS", $"{low:F1}"); cy += rowH;
+        DrawStatRow(cx, cy, contentW, rowH, "Min FPS", $"{min:F1}"); cy += rowH;
+        DrawStatRow(cx, cy, contentW, rowH, "Max FPS", $"{max:F1}"); cy += rowH;
+        DrawStatRow(cx, cy, contentW, rowH, "Total Frames", $"{totalFrames}"); cy += rowH;
+        DrawStatRow(cx, cy, contentW, rowH, "Total Bodies", $"{totalBalls}"); cy += rowH;
+        DrawStatRow(cx, cy, contentW, rowH, "Duration", $"{duration:F0}s"); cy += rowH + 8;
 
-        // Graph
-        if (_graphTexture != null)
+        if (graph != null)
         {
             float graphW = contentW;
-            float graphH = graphW * (_graphTexture.height / (float)_graphTexture.width);
-            GUI.DrawTexture(new Rect(cx, cy, graphW, graphH), _graphTexture);
+            float graphH = graphW * (graph.height / (float)graph.width);
+            GUI.DrawTexture(new Rect(cx, cy, graphW, graphH), graph);
 
             float legendY = cy + graphH + 4;
             GUI.Label(new Rect(cx, legendY, 200, 20), "— FPS    ", _smallLabelStyle);
@@ -315,20 +375,37 @@ public class BenchmarkManager : MonoBehaviour
 
             GUI.Label(new Rect(cx, legendY + 16, 80, 20), "0 s", _smallLabelStyle);
             GUIStyle rightAligned = new GUIStyle(_smallLabelStyle) { alignment = TextAnchor.MiddleRight };
-            GUI.Label(new Rect(cx + graphW - 80, legendY + 16, 80, 20), $"{benchmarkDuration:F0} s", rightAligned);
+            GUI.Label(new Rect(cx + graphW - 80, legendY + 16, 80, 20), $"{duration:F0} s", rightAligned);
 
             cy += graphH + 50;
         }
 
-        // Exit button
-        float btnW = 220;
-        if (GUI.Button(new Rect(x + (panelW - btnW) / 2f, cy, btnW, 55), "Exit", _buttonStyle))
+        // Buttons
+        float btnW = 260;
+        if (continueLabel != null)
         {
-#if UNITY_EDITOR
-            UnityEditor.EditorApplication.isPlaying = false;
-#else
-            Application.Quit();
-#endif
+            float gap = 20;
+            float totalBtnW = btnW * 2 + gap;
+            float btnX = x + (panelW - totalBtnW) / 2f;
+
+            if (GUI.Button(new Rect(btnX, cy, btnW, 55), continueLabel, _continueButtonStyle))
+            {
+                if (CurrentPhase == Phase.Phase1_Results)
+                    TransitionToPhase2();
+                else if (CurrentPhase == Phase.Phase2_Results)
+                    TransitionToPhase3();
+            }
+            if (GUI.Button(new Rect(btnX + btnW + gap, cy, btnW, 55), "Exit", _buttonStyle))
+            {
+                QuitApp();
+            }
+        }
+        else
+        {
+            if (GUI.Button(new Rect(x + (panelW - btnW) / 2f, cy, btnW, 55), "Exit", _buttonStyle))
+            {
+                QuitApp();
+            }
         }
     }
 
@@ -336,6 +413,15 @@ public class BenchmarkManager : MonoBehaviour
     {
         GUI.Label(new Rect(x, y, w * 0.6f, h), label, _labelStyle);
         GUI.Label(new Rect(x + w * 0.6f, y, w * 0.4f, h), value, _valueLabelStyle);
+    }
+
+    private static void QuitApp()
+    {
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#else
+        Application.Quit();
+#endif
     }
 
     // ── Helpers ────────────────────────────────────────────────────
