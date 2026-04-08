@@ -5,15 +5,16 @@ using UnityEngine;
 using UnityEngine.AI;
 
 /// <summary>
-/// Multi-phase benchmark manager.
+/// Multi-phase benchmark manager. Phases transition automatically.
 /// Phase 1: Mosh Pit (pool balls in funnel)
 /// Phase 2: Space Rocks (n-body asteroid sim)
 /// Phase 3: Corn Maze (1000 AI agents pathfinding)
-/// Shows results screen after each phase with FPS graph and stats.
+/// After all phases, shows a combined results screen with per-phase stats
+/// and an overall geometric mean score.
 /// </summary>
 public class BenchmarkManager : MonoBehaviour
 {
-    public enum Phase { Phase1_Running, Phase1_Results, Phase2_Running, Phase2_Results, Phase3_Running, Phase3_Results }
+    public enum Phase { Phase1_Running, Phase2_Running, Phase3_Running, FinalResults }
 
     // ── configuration ──────────────────────────────────────────────
     [Header("Benchmark Settings")]
@@ -21,93 +22,90 @@ public class BenchmarkManager : MonoBehaviour
     public float phase2Duration = 45f;
     public float phase3Duration = 45f;
 
-    /// <summary>Set by SceneBootstrap to handle the transition to Phase 2.</summary>
     public Action onTransitionToPhase2;
-    /// <summary>Set by SceneBootstrap to handle the transition to Phase 3.</summary>
     public Action onTransitionToPhase3;
 
     // ── state ──────────────────────────────────────────────────────
     public Phase CurrentPhase { get; private set; } = Phase.Phase1_Running;
 
-    // Phase 1 data
-    private readonly List<float> _p1FpsHistory = new List<float>();
-    private float _p1Elapsed;
-    private float _p1Avg, _p1Min, _p1Max, _p1Low;
-    private int _p1Balls;
-    private Texture2D _p1Graph;
+    // Per-phase stats
+    private struct PhaseStats
+    {
+        public string name;
+        public float avg, min, max, low;
+        public int totalFrames, totalBodies;
+        public float duration;
+        public Texture2D graph;
+        public bool valid; // was this phase actually run (not skipped with 0 frames)
+    }
 
-    // Phase 2 data
-    private readonly List<float> _p2FpsHistory = new List<float>();
-    private float _p2Elapsed;
-    private float _p2Avg, _p2Min, _p2Max, _p2Low;
-    private int _p2Balls;
-    private Texture2D _p2Graph;
+    private PhaseStats _s1, _s2, _s3;
 
-    // Phase 3 data
-    private readonly List<float> _p3FpsHistory = new List<float>();
-    private float _p3Elapsed;
-    private float _p3Avg, _p3Min, _p3Max, _p3Low;
-    private int _p3Agents;
-    private Texture2D _p3Graph;
+    // Phase frame histories
+    private readonly List<float> _p1Fps = new List<float>();
+    private readonly List<float> _p2Fps = new List<float>();
+    private readonly List<float> _p3Fps = new List<float>();
+    private float _p1Elapsed, _p2Elapsed, _p3Elapsed;
 
-    // HUD (updated periodically)
+    // HUD
     private float _hudFps;
-    private int _hudBalls;
+    private int _hudBodies;
     private float _hudUpdateTimer;
     private const float HudUpdateInterval = 0.25f;
 
     // Styles
     private GUIStyle _boxStyle, _titleStyle, _labelStyle, _valueLabelStyle;
-    private GUIStyle _buttonStyle, _continueButtonStyle, _smallLabelStyle, _hudStyle;
+    private GUIStyle _buttonStyle, _smallLabelStyle, _hudStyle;
+    private GUIStyle _headerStyle, _scoreStyle;
     private bool _stylesInitialized;
+
+    // Scroll position for final results
+    private Vector2 _scrollPos;
 
     // ── MonoBehaviour ──────────────────────────────────────────────
     private void Update()
     {
-        // Escape key skips current running phase entirely
+        // Escape skips current phase
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             if (CurrentPhase == Phase.Phase1_Running)
-            {
-                TransitionToPhase2();
-                return;
-            }
+            { FinishPhase1(); TransitionToPhase2(); return; }
             else if (CurrentPhase == Phase.Phase2_Running)
-            {
-                TransitionToPhase3();
-                return;
-            }
+            { FinishPhase2(); TransitionToPhase3(); return; }
             else if (CurrentPhase == Phase.Phase3_Running)
-            {
-                FinishPhase3();
-                return;
-            }
+            { FinishPhase3(); return; }
         }
 
-        if (CurrentPhase == Phase.Phase1_Running)
+        switch (CurrentPhase)
         {
-            _p1Elapsed += Time.unscaledDeltaTime;
-            float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
-            _p1FpsHistory.Add(fps);
-            UpdateHud(fps);
-            if (_p1Elapsed >= phase1Duration) FinishPhase1();
+            case Phase.Phase1_Running:
+                _p1Elapsed += Time.unscaledDeltaTime;
+                RecordFps(_p1Fps);
+                if (_p1Elapsed >= phase1Duration)
+                { FinishPhase1(); TransitionToPhase2(); }
+                break;
+
+            case Phase.Phase2_Running:
+                _p2Elapsed += Time.unscaledDeltaTime;
+                RecordFps(_p2Fps);
+                if (_p2Elapsed >= phase2Duration)
+                { FinishPhase2(); TransitionToPhase3(); }
+                break;
+
+            case Phase.Phase3_Running:
+                _p3Elapsed += Time.unscaledDeltaTime;
+                RecordFps(_p3Fps);
+                if (_p3Elapsed >= phase3Duration)
+                    FinishPhase3();
+                break;
         }
-        else if (CurrentPhase == Phase.Phase2_Running)
-        {
-            _p2Elapsed += Time.unscaledDeltaTime;
-            float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
-            _p2FpsHistory.Add(fps);
-            UpdateHud(fps);
-            if (_p2Elapsed >= phase2Duration) FinishPhase2();
-        }
-        else if (CurrentPhase == Phase.Phase3_Running)
-        {
-            _p3Elapsed += Time.unscaledDeltaTime;
-            float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
-            _p3FpsHistory.Add(fps);
-            UpdateHud(fps);
-            if (_p3Elapsed >= phase3Duration) FinishPhase3();
-        }
+    }
+
+    private void RecordFps(List<float> history)
+    {
+        float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
+        history.Add(fps);
+        UpdateHud(fps);
     }
 
     private void UpdateHud(float fps)
@@ -116,64 +114,67 @@ public class BenchmarkManager : MonoBehaviour
         if (_hudUpdateTimer <= 0f)
         {
             _hudFps = fps;
-            _hudBalls = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length
-                      + FindObjectsByType<NavMeshAgent>(FindObjectsSortMode.None).Length;
+            _hudBodies = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length
+                       + FindObjectsByType<NavMeshAgent>(FindObjectsSortMode.None).Length;
             _hudUpdateTimer = HudUpdateInterval;
         }
     }
 
-    // ── Phase logic ────────────────────────────────────────────────
+    // ── Phase transitions ──────────────────────────────────────────
     private void FinishPhase1()
     {
-        CurrentPhase = Phase.Phase1_Results;
-        Time.timeScale = 0f;
-        ComputeStats(_p1FpsHistory, out _p1Avg, out _p1Min, out _p1Max, out _p1Low);
-        _p1Balls = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length;
-        _p1Graph = BuildGraphTexture(_p1FpsHistory, _p1Avg, _p1Low, _p1Max, phase1Duration, 800, 300);
+        _s1 = BuildStats("Mosh Pit", _p1Fps, _p1Elapsed, phase1Duration,
+            FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length);
     }
 
     private void TransitionToPhase2()
     {
         onTransitionToPhase2?.Invoke();
         CurrentPhase = Phase.Phase2_Running;
-        Time.timeScale = 1f;
         _hudUpdateTimer = 0f;
     }
 
     private void FinishPhase2()
     {
-        CurrentPhase = Phase.Phase2_Results;
-        Time.timeScale = 0f;
-        ComputeStats(_p2FpsHistory, out _p2Avg, out _p2Min, out _p2Max, out _p2Low);
-        _p2Balls = FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length;
-        _p2Graph = BuildGraphTexture(_p2FpsHistory, _p2Avg, _p2Low, _p2Max, phase2Duration, 800, 300);
+        _s2 = BuildStats("Space Rocks", _p2Fps, _p2Elapsed, phase2Duration,
+            FindObjectsByType<Rigidbody>(FindObjectsSortMode.None).Length);
     }
 
     private void TransitionToPhase3()
     {
         onTransitionToPhase3?.Invoke();
         CurrentPhase = Phase.Phase3_Running;
-        Time.timeScale = 1f;
         _hudUpdateTimer = 0f;
     }
 
     private void FinishPhase3()
     {
-        CurrentPhase = Phase.Phase3_Results;
+        _s3 = BuildStats("Corn Maze", _p3Fps, _p3Elapsed, phase3Duration,
+            FindObjectsByType<NavMeshAgent>(FindObjectsSortMode.None).Length);
+        CurrentPhase = Phase.FinalResults;
         Time.timeScale = 0f;
-        ComputeStats(_p3FpsHistory, out _p3Avg, out _p3Min, out _p3Max, out _p3Low);
-        _p3Agents = FindObjectsByType<NavMeshAgent>(FindObjectsSortMode.None).Length;
-        _p3Graph = BuildGraphTexture(_p3FpsHistory, _p3Avg, _p3Low, _p3Max, phase3Duration, 800, 300);
     }
 
-    private void ComputeStats(List<float> fps, out float avg, out float min, out float max, out float low)
+    private PhaseStats BuildStats(string name, List<float> fps, float elapsed, float configuredDuration, int bodies)
     {
-        avg = fps.Average();
-        min = fps.Min();
-        max = fps.Max();
-        var sorted = fps.OrderBy(f => f).ToList();
-        int count1Pct = Mathf.Max(1, Mathf.FloorToInt(sorted.Count * 0.01f));
-        low = sorted.Take(count1Pct).Average();
+        PhaseStats s = new PhaseStats();
+        s.name = name;
+        s.duration = Mathf.Min(elapsed, configuredDuration);
+        s.totalBodies = bodies;
+
+        if (fps.Count > 0)
+        {
+            s.valid = true;
+            s.avg = fps.Average();
+            s.min = fps.Min();
+            s.max = fps.Max();
+            var sorted = fps.OrderBy(f => f).ToList();
+            int count1Pct = Mathf.Max(1, Mathf.FloorToInt(sorted.Count * 0.01f));
+            s.low = sorted.Take(count1Pct).Average();
+            s.totalFrames = fps.Count;
+            s.graph = BuildGraphTexture(fps, s.avg, s.low, s.max, s.duration, 800, 200);
+        }
+        return s;
     }
 
     // ── Graph texture generation ───────────────────────────────────
@@ -193,7 +194,7 @@ public class BenchmarkManager : MonoBehaviour
         for (int i = 0; i < pixels.Length; i++) pixels[i] = bgColor;
         tex.SetPixels(pixels);
 
-        int marginLeft = 50, marginBottom = 30, marginTop = 10, marginRight = 10;
+        int marginLeft = 50, marginBottom = 20, marginTop = 5, marginRight = 10;
         int graphW = width - marginLeft - marginRight;
         int graphH = height - marginBottom - marginTop;
 
@@ -201,8 +202,7 @@ public class BenchmarkManager : MonoBehaviour
         float fpsMax = Mathf.Ceil(maxFps / 10f) * 10f;
         if (fpsMax < 10) fpsMax = 10;
 
-        // Grid lines
-        float gridStep = Mathf.Max(10, Mathf.Round(fpsMax / 6f / 10f) * 10f);
+        float gridStep = Mathf.Max(10, Mathf.Round(fpsMax / 4f / 10f) * 10f);
         for (float g = 0; g <= fpsMax; g += gridStep)
         {
             int y = marginBottom + Mathf.RoundToInt((g - fpsMin) / (fpsMax - fpsMin) * graphH);
@@ -211,23 +211,14 @@ public class BenchmarkManager : MonoBehaviour
                 tex.SetPixel(x, y, gridColor);
         }
 
-        // Avg line
         int avgY = marginBottom + Mathf.Clamp(Mathf.RoundToInt((avgFps - fpsMin) / (fpsMax - fpsMin) * graphH), 0, graphH);
         for (int x = marginLeft; x < marginLeft + graphW; x++)
-        {
             tex.SetPixel(x, avgY, avgColor);
-            if (avgY + 1 < height) tex.SetPixel(x, avgY + 1, avgColor);
-        }
 
-        // 1% Low line
         int lowY = marginBottom + Mathf.Clamp(Mathf.RoundToInt((lowFps - fpsMin) / (fpsMax - fpsMin) * graphH), 0, graphH);
         for (int x = marginLeft; x < marginLeft + graphW; x++)
-        {
             tex.SetPixel(x, lowY, lowColor);
-            if (lowY + 1 < height) tex.SetPixel(x, lowY + 1, lowColor);
-        }
 
-        // FPS data line
         int sampleCount = fpsData.Count;
         float samplesPerPixel = (float)sampleCount / graphW;
         int prevPx = -1, prevPy = -1;
@@ -259,7 +250,6 @@ public class BenchmarkManager : MonoBehaviour
             prevPy = py;
         }
 
-        // Axis lines
         for (int y = marginBottom; y < marginBottom + graphH; y++)
             tex.SetPixel(marginLeft, y, gridColor);
         for (int x = marginLeft; x < marginLeft + graphW; x++)
@@ -279,30 +269,32 @@ public class BenchmarkManager : MonoBehaviour
         { normal = { background = MakeTex(2, 2, new Color(0.08f, 0.08f, 0.12f, 0.96f)) } };
 
         _titleStyle = new GUIStyle(GUI.skin.label)
-        { fontSize = 32, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+        { fontSize = 30, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
           normal = { textColor = Color.white } };
 
+        _headerStyle = new GUIStyle(GUI.skin.label)
+        { fontSize = 20, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft,
+          normal = { textColor = new Color(0.55f, 0.85f, 1f) } };
+
         _labelStyle = new GUIStyle(GUI.skin.label)
-        { fontSize = 22, normal = { textColor = new Color(0.75f, 0.75f, 0.80f) } };
+        { fontSize = 16, normal = { textColor = new Color(0.75f, 0.75f, 0.80f) } };
 
         _valueLabelStyle = new GUIStyle(GUI.skin.label)
-        { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleRight,
+        { fontSize = 16, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleRight,
           normal = { textColor = Color.white } };
 
         _smallLabelStyle = new GUIStyle(GUI.skin.label)
-        { fontSize = 14, normal = { textColor = new Color(0.55f, 0.55f, 0.60f) } };
+        { fontSize = 12, normal = { textColor = new Color(0.55f, 0.55f, 0.60f) } };
+
+        _scoreStyle = new GUIStyle(GUI.skin.label)
+        { fontSize = 36, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+          normal = { textColor = new Color(0.3f, 1f, 0.5f) } };
 
         _buttonStyle = new GUIStyle(GUI.skin.button)
         { fontSize = 24, fontStyle = FontStyle.Bold, fixedHeight = 55,
           normal = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.75f, 0.18f, 0.18f, 1f)) },
           hover  = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.90f, 0.25f, 0.25f, 1f)) },
           active = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.60f, 0.12f, 0.12f, 1f)) } };
-
-        _continueButtonStyle = new GUIStyle(GUI.skin.button)
-        { fontSize = 24, fontStyle = FontStyle.Bold, fixedHeight = 55,
-          normal = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.18f, 0.55f, 0.25f, 1f)) },
-          hover  = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.25f, 0.70f, 0.35f, 1f)) },
-          active = { textColor = Color.white, background = MakeTex(2, 2, new Color(0.12f, 0.40f, 0.18f, 1f)) } };
 
         _hudStyle = new GUIStyle(GUI.skin.label)
         { fontSize = 18, fontStyle = FontStyle.Bold,
@@ -313,126 +305,175 @@ public class BenchmarkManager : MonoBehaviour
     {
         InitStyles();
 
-        switch (CurrentPhase)
+        if (CurrentPhase != Phase.FinalResults)
         {
-            case Phase.Phase1_Running:
-                DrawHud("Phase 1: Mosh Pit", phase1Duration - _p1Elapsed);
-                break;
-            case Phase.Phase1_Results:
-                DrawResultsScreen("Phase 1: Mosh Pit — Results",
-                    _p1Avg, _p1Low, _p1Min, _p1Max, _p1FpsHistory.Count, _p1Balls,
-                    phase1Duration, _p1Graph, continueLabel: "Continue to Phase 2");
-                break;
-            case Phase.Phase2_Running:
-                DrawHud("Phase 2: Space Rocks", phase2Duration - _p2Elapsed);
-                break;
-            case Phase.Phase2_Results:
-                DrawResultsScreen("Phase 2: Space Rocks — Results",
-                    _p2Avg, _p2Low, _p2Min, _p2Max, _p2FpsHistory.Count, _p2Balls,
-                    phase2Duration, _p2Graph, continueLabel: "Continue to Phase 3");
-                break;
-            case Phase.Phase3_Running:
-                DrawHud("Phase 3: Corn Maze", phase3Duration - _p3Elapsed);
-                break;
-            case Phase.Phase3_Results:
-                DrawResultsScreen("Phase 3: Corn Maze \u2014 Results",
-                    _p3Avg, _p3Low, _p3Min, _p3Max, _p3FpsHistory.Count, _p3Agents,
-                    phase3Duration, _p3Graph, continueLabel: null);
-                break;
+            string phaseName = CurrentPhase switch
+            {
+                Phase.Phase1_Running => "Phase 1: Mosh Pit",
+                Phase.Phase2_Running => "Phase 2: Space Rocks",
+                Phase.Phase3_Running => "Phase 3: Corn Maze",
+                _ => ""
+            };
+            float elapsed = CurrentPhase switch
+            {
+                Phase.Phase1_Running => _p1Elapsed,
+                Phase.Phase2_Running => _p2Elapsed,
+                Phase.Phase3_Running => _p3Elapsed,
+                _ => 0f
+            };
+            float dur = CurrentPhase switch
+            {
+                Phase.Phase1_Running => phase1Duration,
+                Phase.Phase2_Running => phase2Duration,
+                Phase.Phase3_Running => phase3Duration,
+                _ => 0f
+            };
+            string hudText = $"{phaseName}  |  FPS: {_hudFps:F0}  |  Time: {dur - elapsed:F1}s  |  Bodies: {_hudBodies}";
+            GUI.Label(new Rect(10, 10, 700, 30), hudText, _hudStyle);
+            return;
         }
+
+        // ── Final combined results screen ──
+        DrawFinalResults();
     }
 
-    private void DrawHud(string phaseName, float timeLeft)
+    private void DrawFinalResults()
     {
-        string hudText = $"{phaseName}  |  FPS: {_hudFps:F0}  |  Time: {timeLeft:F1}s  |  Bodies: {_hudBalls}";
-        GUI.Label(new Rect(10, 10, 700, 30), hudText, _hudStyle);
-    }
-
-    private void DrawResultsScreen(string title, float avg, float low, float min, float max,
-        int totalFrames, int totalBalls, float duration, Texture2D graph, string continueLabel = null, bool showContinue = false)
-    {
-        float panelW = 880;
-        float panelH = 700;
+        float panelW = 920;
+        float panelH = Screen.height * 0.92f;
         float x = (Screen.width - panelW) / 2f;
         float y = (Screen.height - panelH) / 2f;
 
         // Dim
         GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height),
-            MakeTex(1, 1, new Color(0, 0, 0, 0.65f)));
+            MakeTex(1, 1, new Color(0, 0, 0, 0.75f)));
 
         GUI.Box(new Rect(x, y, panelW, panelH), GUIContent.none, _boxStyle);
 
-        float cx = x + 40;
-        float cy = y + 15;
-        float contentW = panelW - 80;
+        // Scrollable content
+        float contentW = panelW - 60;
+        float contentHeight = EstimateContentHeight();
+        Rect viewRect = new Rect(x + 10, y + 10, panelW - 20, panelH - 20);
+        Rect contentRect = new Rect(0, 0, contentW, contentHeight);
 
-        GUI.Label(new Rect(cx, cy, contentW, 45), title, _titleStyle);
-        cy += 52;
+        _scrollPos = GUI.BeginScrollView(viewRect, _scrollPos, contentRect);
 
-        float rowH = 34;
-        DrawStatRow(cx, cy, contentW, rowH, "Average FPS", $"{avg:F1}"); cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "1% Low FPS", $"{low:F1}"); cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Min FPS", $"{min:F1}"); cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Max FPS", $"{max:F1}"); cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Total Frames", $"{totalFrames}"); cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Total Bodies", $"{totalBalls}"); cy += rowH;
-        DrawStatRow(cx, cy, contentW, rowH, "Duration", $"{duration:F0}s"); cy += rowH + 8;
+        float cx = 10;
+        float cy = 5;
 
-        if (graph != null)
-        {
-            float graphW = contentW;
-            float graphH = graphW * (graph.height / (float)graph.width);
-            GUI.DrawTexture(new Rect(cx, cy, graphW, graphH), graph);
+        // Title
+        GUI.Label(new Rect(cx, cy, contentW, 40), "MoshPit Benchmark — Final Results", _titleStyle);
+        cy += 48;
 
-            float legendY = cy + graphH + 4;
-            GUI.Label(new Rect(cx, legendY, 200, 20), "— FPS    ", _smallLabelStyle);
+        // Geometric mean score
+        float geomean = ComputeGeomean();
+        GUI.Label(new Rect(cx, cy, contentW, 50), $"Overall Score: {geomean:F1} FPS", _scoreStyle);
+        cy += 55;
 
-            GUIStyle avgLegend = new GUIStyle(_smallLabelStyle) { normal = { textColor = new Color(1f, 0.85f, 0.25f) } };
-            GUI.Label(new Rect(cx + 80, legendY, 200, 20), "— Avg", avgLegend);
+        // Separator
+        GUI.DrawTexture(new Rect(cx, cy, contentW, 1), MakeTex(1, 1, new Color(0.3f, 0.3f, 0.35f)));
+        cy += 10;
 
-            GUIStyle lowLegend = new GUIStyle(_smallLabelStyle) { normal = { textColor = new Color(1f, 0.30f, 0.30f) } };
-            GUI.Label(new Rect(cx + 160, legendY, 200, 20), "— 1% Low", lowLegend);
+        // Phase sections
+        cy = DrawPhaseSection(cx, cy, contentW, "Phase 1: Mosh Pit", _s1);
+        cy = DrawPhaseSection(cx, cy, contentW, "Phase 2: Space Rocks", _s2);
+        cy = DrawPhaseSection(cx, cy, contentW, "Phase 3: Corn Maze", _s3);
 
-            GUI.Label(new Rect(cx, legendY + 16, 80, 20), "0 s", _smallLabelStyle);
-            GUIStyle rightAligned = new GUIStyle(_smallLabelStyle) { alignment = TextAnchor.MiddleRight };
-            GUI.Label(new Rect(cx + graphW - 80, legendY + 16, 80, 20), $"{duration:F0} s", rightAligned);
+        // Exit button
+        cy += 10;
+        float btnW = 220;
+        if (GUI.Button(new Rect((contentW - btnW) / 2f, cy, btnW, 55), "Exit", _buttonStyle))
+            QuitApp();
+        cy += 70;
 
-            cy += graphH + 50;
-        }
-
-        // Buttons
-        float btnW = 260;
-        if (continueLabel != null)
-        {
-            float gap = 20;
-            float totalBtnW = btnW * 2 + gap;
-            float btnX = x + (panelW - totalBtnW) / 2f;
-
-            if (GUI.Button(new Rect(btnX, cy, btnW, 55), continueLabel, _continueButtonStyle))
-            {
-                if (CurrentPhase == Phase.Phase1_Results)
-                    TransitionToPhase2();
-                else if (CurrentPhase == Phase.Phase2_Results)
-                    TransitionToPhase3();
-            }
-            if (GUI.Button(new Rect(btnX + btnW + gap, cy, btnW, 55), "Exit", _buttonStyle))
-            {
-                QuitApp();
-            }
-        }
-        else
-        {
-            if (GUI.Button(new Rect(x + (panelW - btnW) / 2f, cy, btnW, 55), "Exit", _buttonStyle))
-            {
-                QuitApp();
-            }
-        }
+        GUI.EndScrollView();
     }
 
-    private void DrawStatRow(float x, float y, float w, float h, string label, string value)
+    private float DrawPhaseSection(float cx, float cy, float contentW, string title, PhaseStats s)
     {
-        GUI.Label(new Rect(x, y, w * 0.6f, h), label, _labelStyle);
-        GUI.Label(new Rect(x + w * 0.6f, y, w * 0.4f, h), value, _valueLabelStyle);
+        GUI.Label(new Rect(cx, cy, contentW, 28), title, _headerStyle);
+        cy += 30;
+
+        if (!s.valid)
+        {
+            GUI.Label(new Rect(cx + 20, cy, contentW, 22), "(Skipped)", _labelStyle);
+            cy += 30;
+            return cy;
+        }
+
+        float rowH = 24;
+        float col1 = contentW * 0.55f;
+        float col2 = contentW * 0.4f;
+        float indent = cx + 20;
+
+        DrawStatRowSmall(indent, cy, col1, col2, rowH, "Average FPS", $"{s.avg:F1}"); cy += rowH;
+        DrawStatRowSmall(indent, cy, col1, col2, rowH, "1% Low FPS", $"{s.low:F1}"); cy += rowH;
+        DrawStatRowSmall(indent, cy, col1, col2, rowH, "Min / Max FPS", $"{s.min:F1} / {s.max:F1}"); cy += rowH;
+        DrawStatRowSmall(indent, cy, col1, col2, rowH, "Total Frames", $"{s.totalFrames}"); cy += rowH;
+        DrawStatRowSmall(indent, cy, col1, col2, rowH, "Bodies", $"{s.totalBodies}"); cy += rowH;
+        DrawStatRowSmall(indent, cy, col1, col2, rowH, "Duration", $"{s.duration:F1}s"); cy += rowH + 4;
+
+        // Graph
+        if (s.graph != null)
+        {
+            float graphW = contentW - 40;
+            float graphH = graphW * (s.graph.height / (float)s.graph.width);
+            GUI.DrawTexture(new Rect(indent, cy, graphW, graphH), s.graph);
+
+            float legendY = cy + graphH + 2;
+            GUI.Label(new Rect(indent, legendY, 100, 16), "— FPS", _smallLabelStyle);
+            GUIStyle avgLeg = new GUIStyle(_smallLabelStyle) { normal = { textColor = new Color(1f, 0.85f, 0.25f) } };
+            GUI.Label(new Rect(indent + 70, legendY, 100, 16), "— Avg", avgLeg);
+            GUIStyle lowLeg = new GUIStyle(_smallLabelStyle) { normal = { textColor = new Color(1f, 0.3f, 0.3f) } };
+            GUI.Label(new Rect(indent + 140, legendY, 100, 16), "— 1% Low", lowLeg);
+            cy += graphH + 24;
+        }
+
+        // Separator
+        GUI.DrawTexture(new Rect(cx, cy, contentW, 1), MakeTex(1, 1, new Color(0.25f, 0.25f, 0.3f)));
+        cy += 10;
+
+        return cy;
+    }
+
+    private void DrawStatRowSmall(float x, float y, float labelW, float valueW, float h, string label, string value)
+    {
+        GUI.Label(new Rect(x, y, labelW, h), label, _labelStyle);
+        GUI.Label(new Rect(x + labelW, y, valueW, h), value, _valueLabelStyle);
+    }
+
+    private float ComputeGeomean()
+    {
+        List<float> avgs = new List<float>();
+        if (_s1.valid) avgs.Add(_s1.avg);
+        if (_s2.valid) avgs.Add(_s2.avg);
+        if (_s3.valid) avgs.Add(_s3.avg);
+
+        if (avgs.Count == 0) return 0f;
+
+        double product = 1.0;
+        foreach (float a in avgs) product *= a;
+        return (float)Math.Pow(product, 1.0 / avgs.Count);
+    }
+
+    private float EstimateContentHeight()
+    {
+        float h = 130; // title + score + separator
+        PhaseStats[] phases = { _s1, _s2, _s3 };
+        foreach (var s in phases)
+        {
+            h += 30; // header
+            if (!s.valid) { h += 30; continue; }
+            h += 24 * 6 + 4; // stat rows
+            if (s.graph != null)
+            {
+                float graphW = 820;
+                h += graphW * (s.graph.height / (float)s.graph.width) + 24;
+            }
+            h += 10; // separator
+        }
+        h += 80; // exit button
+        return h;
     }
 
     private static void QuitApp()
