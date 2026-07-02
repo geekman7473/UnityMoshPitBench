@@ -8,6 +8,10 @@
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
 
+/BuildIl2cpp/
+/BuildIl2cppARM64/
+/BuildMonoARM64/
+
 # MemoryCaptures
 /[Mm]emoryCaptures/
 

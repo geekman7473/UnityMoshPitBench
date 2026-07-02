@@ -62,6 +62,11 @@ public class BenchmarkManager : MonoBehaviour
     // Scroll position for final results
     private Vector2 _scrollPos;
 
+    // Auto-quit timer for FinalResults phase
+    private float _finalResultsElapsed;
+    private const float FinalResultsDisplayTime = 30f;
+    private bool _resultsWritten;
+
     // ── MonoBehaviour ──────────────────────────────────────────────
     private void Update()
     {
@@ -74,6 +79,17 @@ public class BenchmarkManager : MonoBehaviour
             { FinishPhase2(); TransitionToPhase3(); return; }
             else if (CurrentPhase == Phase.Phase3_Running)
             { FinishPhase3(); return; }
+        }
+
+        if (CurrentPhase == Phase.FinalResults)
+        {
+            _finalResultsElapsed += Time.unscaledDeltaTime;
+            if (_finalResultsElapsed >= FinalResultsDisplayTime)
+            {
+                WriteResultsToStdout();
+                QuitApp();
+            }
+            return;
         }
 
         switch (CurrentPhase)
@@ -383,7 +399,10 @@ public class BenchmarkManager : MonoBehaviour
         cy += 10;
         float btnW = 220;
         if (GUI.Button(new Rect((contentW - btnW) / 2f, cy, btnW, 55), "Exit", _buttonStyle))
+        {
+            WriteResultsToStdout();
             QuitApp();
+        }
         cy += 70;
 
         GUI.EndScrollView();
@@ -474,6 +493,38 @@ public class BenchmarkManager : MonoBehaviour
         }
         h += 80; // exit button
         return h;
+    }
+
+    private void WriteResultsToStdout()
+    {
+        if (_resultsWritten) return;
+        _resultsWritten = true;
+
+        float geomean = ComputeGeomean();
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        sb.AppendLine("===== MoshPit Benchmark Results =====");
+        sb.AppendLine($"Overall Score: {geomean:F1} FPS (geometric mean)");
+        sb.AppendLine();
+        WritePhaseResult(sb, "Phase 1: Mosh Pit", _s1);
+        WritePhaseResult(sb, "Phase 2: Space Rocks", _s2);
+        WritePhaseResult(sb, "Phase 3: Corn Maze", _s3);
+        sb.AppendLine("=====================================");
+
+        System.Console.WriteLine(sb.ToString());
+    }
+
+    private static void WritePhaseResult(System.Text.StringBuilder sb, string title, PhaseStats s)
+    {
+        sb.AppendLine($"--- {title} ---");
+        if (!s.valid) { sb.AppendLine("  (Skipped)"); sb.AppendLine(); return; }
+        sb.AppendLine($"  Average FPS:   {s.avg:F1}");
+        sb.AppendLine($"  1% Low FPS:    {s.low:F1}");
+        sb.AppendLine($"  Min FPS:       {s.min:F1}");
+        sb.AppendLine($"  Max FPS:       {s.max:F1}");
+        sb.AppendLine($"  Total Frames:  {s.totalFrames}");
+        sb.AppendLine($"  Bodies:        {s.totalBodies}");
+        sb.AppendLine($"  Duration:      {s.duration:F1}s");
+        sb.AppendLine();
     }
 
     private static void QuitApp()
